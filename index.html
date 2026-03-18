@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简单三子棋 (Simple Three-in-a-Row)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            background-size: cover;
+            background-position: center;
+        }
+
+        #game-container {
+            position: relative;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+
+        canvas {
+            border: 2px solid #333;
+            cursor: pointer;
+            background-color: #f3e5ab; /* 默认木质背景色 */
+            background-size: cover;
+            background-position: center;
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            max-width: 500px;
+        }
+
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            background-color: #4CAF50;
+            color: white;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .label-btn {
+            padding: 10px 15px;
+            border-radius: 5px;
+            background-color: #2196F3;
+            color: white;
+            cursor: pointer;
+            display: inline-block;
+        }
+
+        .status {
+            margin-bottom: 10px;
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #333;
+        }
+
+        #flash-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div class="status" id="status-text">玩家1 (黑子) 放置阶段</div>
+    <canvas id="gameCanvas" width="500" height="500"></canvas>
+    <div class="controls">
+        <button id="mode-btn">模式: 人机</button>
+        <label class="label-btn" for="bg-upload">更换背景</label>
+        <input type="file" id="bg-upload" accept="image/*">
+        
+        <label class="label-btn" for="p1-upload">玩家1棋子</label>
+        <input type="file" id="p1-upload" accept="image/*">
+        
+        <label class="label-btn" for="p2-upload">玩家2棋子</label>
+        <input type="file" id="p2-upload" accept="image/*">
+        
+        <button id="reset-btn">重新开始</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusText = document.getElementById('status-text');
+    const modeBtn = document.getElementById('mode-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    // 游戏设置
+    const BOARD_SIZE = 3;
+    const MARGIN = 100;
+    const GRID_SIZE = (canvas.width - MARGIN * 2) / (BOARD_SIZE - 1);
+    const PIECE_RADIUS = 45;
+
+    let gameState = {
+        map: Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(0)),
+        curStep: 0,
+        mode: 'PVE', // 'PVP' 或 'PVE'
+        maxPieces: 3,
+        player1Pieces: [],
+        player2Pieces: [],
+        selectedPiece: null,
+        gameOver: false,
+        flashPieces: []
+    };
+
+    let assets = {
+        bg: null,
+        p1: null,
+        p2: null
+    };
+
+    function init() {
+        canvas.addEventListener('click', handleCanvasClick);
+        canvas.addEventListener('mousemove', handleMouseMove);
+        
+        modeBtn.onclick = () => {
+            gameState.mode = gameState.mode === 'PVE' ? 'PVP' : 'PVE';
+            modeBtn.innerText = `模式: ${gameState.mode === 'PVE' ? '人机' : '双人'}`;
+            resetGame();
+        };
+
+        resetBtn.onclick = resetGame;
+
+        setupImageUpload('bg-upload', (img) => {
+            assets.bg = img;
+            canvas.style.backgroundImage = `url(${img.src})`;
+            draw();
+        });
+
+        setupImageUpload('p1-upload', (img) => {
+            assets.p1 = img;
+            draw();
+        });
+
+        setupImageUpload('p2-upload', (img) => {
+            assets.p2 = img;
+            draw();
+        });
+
+        resetGame();
+    }
+
+    function setupImageUpload(id, callback) {
+        document.getElementById(id).onchange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => callback(img);
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+    }
+
+    function resetGame() {
+        gameState.map = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(0));
+        gameState.curStep = 0;
+        gameState.player1Pieces = [];
+        gameState.player2Pieces = [];
+        gameState.selectedPiece = null;
+        gameState.gameOver = false;
+        gameState.flashPieces = [];
+        updateStatus();
+        draw();
+    }
+
+    function updateStatus() {
+        if (gameState.gameOver) return;
+        const player = gameState.curStep % 2 === 0 ? 1 : 2;
+        const pieces = player === 1 ? gameState.player1Pieces : gameState.player2Pieces;
+        const stage = pieces.length < gameState.maxPieces ? '放置阶段' : '移动阶段';
+        statusText.innerText = `玩家${player} (${player === 1 ? '黑子' : '白子'}) ${stage}`;
+    }
+
+    function handleCanvasClick(e) {
+        if (gameState.gameOver) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        const gameX = Math.round((x - MARGIN) / GRID_SIZE);
+        const gameY = Math.round((y - MARGIN) / GRID_SIZE);
+
+        if (gameX < 0 || gameX >= BOARD_SIZE || gameY < 0 || gameY >= BOARD_SIZE) return;
+
+        const player = gameState.curStep % 2 === 0 ? 1 : 2;
+        const pieces = player === 1 ? gameState.player1Pieces : gameState.player2Pieces;
+
+        if (pieces.length < gameState.maxPieces) {
+            // 放置
+            if (gameState.map[gameX][gameY] === 0) {
+                gameState.map[gameX][gameY] = player;
+                pieces.push({x: gameX, y: gameY});
+                gameState.curStep++;
+                afterMove();
+            }
+        } else {
+            // 移动
+            if (gameState.selectedPiece) {
+                const oldX = gameState.selectedPiece.x;
+                const oldY = gameState.selectedPiece.y;
+
+                if (gameState.map[gameX][gameY] === 0) {
+                    if (Math.abs(gameX - oldX) <= 1 && Math.abs(gameY - oldY) <= 1) {
+                        gameState.map[oldX][oldY] = 0;
+                        gameState.map[gameX][gameY] = player;
+                        
+                        // 更新 pieces 数组
+                        const idx = pieces.findIndex(p => p.x === oldX && p.y === oldY);
+                        pieces[idx] = {x: gameX, y: gameY};
+                        
+                        gameState.selectedPiece = null;
+                        gameState.curStep++;
+                        afterMove();
+                    } else {
+                        gameState.selectedPiece = null;
+                    }
+                } else if (gameState.map[gameX][gameY] === player) {
+                    gameState.selectedPiece = {x: gameX, y: gameY};
+                } else {
+                    gameState.selectedPiece = null;
+                }
+            } else {
+                if (gameState.map[gameX][gameY] === player) {
+                    gameState.selectedPiece = {x: gameX, y: gameY};
+                }
+            }
+        }
+        draw();
+    }
+
+    function handleMouseMove(e) {
+        if (gameState.gameOver) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        const gameX = Math.round((x - MARGIN) / GRID_SIZE);
+        const gameY = Math.round((y - MARGIN) / GRID_SIZE);
+
+        if (gameX >= 0 && gameX < BOARD_SIZE && gameY >= 0 && gameY < BOARD_SIZE) {
+            const dist = Math.sqrt(Math.pow(x - (MARGIN + gameX * GRID_SIZE), 2) + Math.pow(y - (MARGIN + gameY * GRID_SIZE), 2));
+            canvas.style.cursor = dist < 25 ? 'pointer' : 'default';
+        } else {
+            canvas.style.cursor = 'default';
+        }
+    }
+
+    function afterMove() {
+        const result = checkWin();
+        if (result !== 0) {
+            gameState.gameOver = true;
+            gameState.flashPieces = result.pieces;
+            draw();
+            setTimeout(() => {
+                alert(`游戏结束: ${result.winner === 1 ? '玩家1' : '玩家2'} 获胜!`);
+                resetGame();
+            }, 500);
+            return;
+        }
+
+        if (gameState.mode === 'PVE' && gameState.curStep % 2 === 1) {
+            setTimeout(aiMove, 300);
+        }
+        updateStatus();
+    }
+
+    function aiMove() {
+        const player = 2;
+        const pieces = gameState.player2Pieces;
+
+        if (pieces.length < gameState.maxPieces) {
+            let empty = [];
+            for(let x=0; x<BOARD_SIZE; x++) {
+                for(let y=0; y<BOARD_SIZE; y++) {
+                    if (gameState.map[x][y] === 0) empty.push({x, y});
+                }
+            }
+            if (empty.length > 0) {
+                const p = empty[Math.floor(Math.random() * empty.length)];
+                gameState.map[p.x][p.y] = player;
+                pieces.push(p);
+                gameState.curStep++;
+            }
+        } else {
+            // 随机移动
+            let possibleMoves = [];
+            pieces.forEach(p => {
+                for(let dx=-1; dx<=1; dx++) {
+                    for(let dy=-1; dy<=1; dy++) {
+                        if (dx === 0 && dy === 0) continue;
+                        const nx = p.x + dx;
+                        const ny = p.y + dy;
+                        if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && gameState.map[nx][ny] === 0) {
+                            possibleMoves.push({old: p, new: {x: nx, y: ny}});
+                        }
+                    }
+                }
+            });
+            if (possibleMoves.length > 0) {
+                const move = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
+                gameState.map[move.old.x][move.old.y] = 0;
+                gameState.map[move.new.x][move.new.y] = player;
+                const idx = pieces.findIndex(p => p.x === move.old.x && p.y === move.old.y);
+                pieces[idx] = move.new;
+                gameState.curStep++;
+            }
+        }
+
+        const result = checkWin();
+        if (result !== 0) {
+            gameState.gameOver = true;
+            gameState.flashPieces = result.pieces;
+            draw();
+            setTimeout(() => {
+                alert(`游戏结束: 电脑获胜!`);
+                resetGame();
+            }, 500);
+        }
+        updateStatus();
+        draw();
+    }
+
+    function checkWin() {
+        const target = 3;
+        const map = gameState.map;
+
+        // 横向
+        for (let x = 0; x <= BOARD_SIZE - target; x++) {
+            for (let y = 0; y < BOARD_SIZE; y++) {
+                if (map[x][y] !== 0 && map[x][y] === map[x+1][y] && map[x][y] === map[x+2][y]) {
+                    return {winner: map[x][y], pieces: [{x,y}, {x:x+1, y}, {x:x+2, y}]};
+                }
+            }
+        }
+        // 纵向
+        for (let x = 0; x < BOARD_SIZE; x++) {
+            for (let y = 0; y <= BOARD_SIZE - target; y++) {
+                if (map[x][y] !== 0 && map[x][y] === map[x][y+1] && map[x][y] === map[x][y+2]) {
+                    return {winner: map[x][y], pieces: [{x,y}, {x, y:y+1}, {x, y:y+2}]};
+                }
+            }
+        }
+        // 对角线
+        for (let x = 0; x <= BOARD_SIZE - target; x++) {
+            for (let y = 0; y <= BOARD_SIZE - target; y++) {
+                if (map[x][y] !== 0 && map[x][y] === map[x+1][y+1] && map[x][y] === map[x+2][y+2]) {
+                    return {winner: map[x][y], pieces: [{x,y}, {x:x+1, y:y+1}, {x:x+2, y:y+2}]};
+                }
+            }
+        }
+        for (let x = 0; x <= BOARD_SIZE - target; x++) {
+            for (let y = target - 1; y < BOARD_SIZE; y++) {
+                if (map[x][y] !== 0 && map[x][y] === map[x+1][y-1] && map[x][y] === map[x+2][y-2]) {
+                    return {winner: map[x][y], pieces: [{x,y}, {x:x+1, y:y-1}, {x:x+2, y:y-2}]};
+                }
+            }
+        }
+        return 0;
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 绘制网格
+        ctx.beginPath();
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < BOARD_SIZE; i++) {
+            // 横线
+            ctx.moveTo(MARGIN, MARGIN + i * GRID_SIZE);
+            ctx.lineTo(MARGIN + (BOARD_SIZE - 1) * GRID_SIZE, MARGIN + i * GRID_SIZE);
+            // 竖线
+            ctx.moveTo(MARGIN + i * GRID_SIZE, MARGIN);
+            ctx.lineTo(MARGIN + i * GRID_SIZE, MARGIN + (BOARD_SIZE - 1) * GRID_SIZE);
+        }
+        ctx.stroke();
+
+        // 绘制选中状态
+        if (gameState.selectedPiece) {
+            ctx.beginPath();
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 5]);
+            const sx = MARGIN + gameState.selectedPiece.x * GRID_SIZE;
+            const sy = MARGIN + gameState.selectedPiece.y * GRID_SIZE;
+            ctx.strokeRect(sx - 40, sy - 40, 80, 80);
+            ctx.setLineDash([]);
+        }
+
+        // 绘制棋子
+        for (let x = 0; x < BOARD_SIZE; x++) {
+            for (let y = 0; y < BOARD_SIZE; y++) {
+                const val = gameState.map[x][y];
+                if (val === 0) continue;
+
+                const px = MARGIN + x * GRID_SIZE;
+                const py = MARGIN + y * GRID_SIZE;
+
+                if (val === 1) {
+                    if (assets.p1) {
+                        ctx.drawImage(assets.p1, px - 35, py - 35, 70, 70);
+                    } else {
+                        const grad = ctx.createRadialGradient(px, py, 5, px, py, PIECE_RADIUS);
+                        grad.addColorStop(0, '#666');
+                        grad.addColorStop(1, '#000');
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.arc(px, py, PIECE_RADIUS, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                } else {
+                    if (assets.p2) {
+                        ctx.drawImage(assets.p2, px - 35, py - 35, 70, 70);
+                    } else {
+                        const grad = ctx.createRadialGradient(px, py, 5, px, py, PIECE_RADIUS);
+                        grad.addColorStop(0, '#fff');
+                        grad.addColorStop(1, '#aaa');
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.arc(px, py, PIECE_RADIUS, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+        }
+    }
+
+    window.onload = init;
+</script>
+
+</body>
+</html>
